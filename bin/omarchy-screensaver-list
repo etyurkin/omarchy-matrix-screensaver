@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# List the screensaver effects that can be selected with omarchy-screensaver-set.
+#
+# The effect names come from ttfx itself rather than a hardcoded list, so a ttfx
+# upgrade that adds or drops an effect is picked up without editing this script.
+# "random" is ours: it maps to ttfx --random-effect, which is the stock Omarchy
+# screensaver behaviour. "omarchy-matrix" is ours too: a local renderer rather
+# than a ttfx subcommand, so it has to be named here.
+
+set -euo pipefail
+
+if ! command -v ttfx >/dev/null 2>&1; then
+  echo "ttfx is not installed" >&2
+  exit 1
+fi
+
+descriptions() {
+  # The Commands: block of `ttfx --help` is "  <name>  <description>" until the
+  # blank line before Options:. `help` is ttfx's own builtin, not an effect.
+  ttfx --help 2>&1 |
+    sed -n '/^Commands:/,/^Options:/p' |
+    sed -e '1d' -e '$d' |
+    grep -E '^  [a-z]' |
+    sed -E 's/^  ([a-z]+) +(.*)$/\1\t\2/' |
+    grep -v $'^help\t'
+}
+
+if [[ ${1:-} == "--with-descriptions" ]]; then
+  printf 'random\tPick a different effect each time the screensaver runs\n'
+  printf 'omarchy-matrix\tRain that condenses into the Omarchy logo, then dissolves\n'
+  descriptions
+else
+  echo random
+  echo omarchy-matrix
+  descriptions | cut -f1
+fi

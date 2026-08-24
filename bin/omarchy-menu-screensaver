@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Pick the screensaver effect from the Omarchy menu.
+
+set -euo pipefail
+
+STATE_FILE="$HOME/.local/state/omarchy/current/screensaver.name"
+
+SCREENSAVER_ICON=$'\U000f1104'  # nf-md-monitor_star
+CURRENT_ICON=$'\U000f012c'      # nf-md-check
+
+current=$(cat "$STATE_FILE" 2>/dev/null || echo random)
+
+# The effect name rides in the label so it comes back as the key to act on, and
+# the description rides along as subtext to explain what each effect looks like.
+# The current effect is flagged by its icon, which the menu shows but never
+# returns, keeping the returned label clean.
+rows=$(omarchy-screensaver-list --with-descriptions |
+  while IFS=$'\t' read -r effect description; do
+    if [[ $effect == "$current" ]]; then
+      printf '%s\t%s\t%s\n' "$CURRENT_ICON" "$effect" "$description"
+    else
+      printf '%s\t%s\t%s\n' "$SCREENSAVER_ICON" "$effect" "$description"
+    fi
+  done)
+
+selection=$(omarchy-menu-select "Screensaver effect" <<<"$rows") || exit 0
+[[ -n $selection ]] || exit 0
+
+effect=$(cut -f1 <<<"$selection")
+[[ -n $effect ]] || exit 1
+
+omarchy-screensaver-set "$effect" >/dev/null

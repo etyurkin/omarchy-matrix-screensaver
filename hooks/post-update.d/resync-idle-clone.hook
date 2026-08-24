@@ -1,0 +1,77 @@
+#!/bin/bash
+
+# Keep the cloned idle service in sync with the packaged one.
+#
+# The cloned idle plugin (<user>.idle) is a clone of omarchy.idle that exists
+# only to swap one command: the screensaver launcher. Cloning is the only way to
+# change it -- the stock plugin and both launcher binaries are package-owned, the
+# screensaver command is hardcoded in Service.qml rather than read from
+# shell.json, /usr/share/omarchy/bin outranks ~/.local/bin on PATH so it cannot
+# be shadowed, and no idle hook exists.
+#
+# The cost of a clone is that it silently stops receiving upstream fixes. This
+# re-copies the packaged source after every update and re-applies the one-line
+# swap, so the clone can only ever differ from stock by that line.
+#
+# manifest.json is deliberately left alone: it carries the clone's own id.
+
+set -euo pipefail
+
+STOCK_DIR="/usr/share/omarchy/shell/plugins/services/idle"
+# The clone is named after whoever ran `omarchy plugin clone`, so find it by
+# what it says it was cloned from rather than by guessing the username.
+CLONE_DIR=""
+for candidate in "$HOME"/.config/omarchy/plugins/*.idle; do
+  [[ -f $candidate/manifest.json ]] || continue
+  if grep -q '"clonedFrom": *"omarchy.idle"' "$candidate/manifest.json"; then
+    CLONE_DIR="$candidate"
+    break
+  fi
+done
+[[ -n $CLONE_DIR ]] || exit 0
+STOCK_CMD="omarchy-launch-screensaver"
+CUSTOM_CMD="omarchy-launch-custom-screensaver"
+
+# Clone removed, or the packaged plugin moved: nothing to reconcile.
+[[ -d $CLONE_DIR && -d $STOCK_DIR ]] || exit 0
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+resynced=()
+
+for file in Service.qml IdleModel.js; do
+  src="$STOCK_DIR/$file"
+  dst="$CLONE_DIR/$file"
+  [[ -f $src ]] || continue
+
+  if [[ $file == Service.qml ]]; then
+    sed "s/\b${STOCK_CMD}\b/${CUSTOM_CMD}/g" "$src" >"$tmp/$file"
+    # Bail rather than install a copy that never calls our launcher. If upstream
+    # restructures how the screensaver is started, a silent "successful" sync
+    # would leave the screensaver simply never appearing.
+    if ! grep -q "$CUSTOM_CMD" "$tmp/$file"; then
+      omarchy-notification-send -u critical -g 󰅚 \
+        "Idle plugin needs attention" \
+        "Upstream idle service changed shape; re-apply the custom screensaver swap by hand." \
+        >/dev/null 2>&1 || true
+      exit 0
+    fi
+  else
+    cp "$src" "$tmp/$file"
+  fi
+
+  if ! cmp -s "$tmp/$file" "$dst"; then
+    cp "$tmp/$file" "$dst"
+    resynced+=("$file")
+  fi
+done
+
+# Saving under ~/.config/omarchy/plugins/ makes the shell reload the plugin, so
+# there is nothing to restart here.
+if ((${#resynced[@]})); then
+  omarchy-notification-send -g 󰅐 \
+    "Idle plugin re-synced" \
+    "Picked up upstream changes to ${resynced[*]}; custom screensaver swap re-applied." \
+    >/dev/null 2>&1 || true
+fi

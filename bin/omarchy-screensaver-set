@@ -1,0 +1,42 @@
+#!/bin/bash
+
+# Select which effect the screensaver runs.
+#
+# Stores the choice in the same state directory Omarchy uses for the current
+# theme, so it survives reboots and omarchy update. omarchy-custom-screensaver
+# reads it at launch.
+
+set -euo pipefail
+
+STATE_FILE="$HOME/.local/state/omarchy/current/screensaver.name"
+
+if [[ -z ${1:-} || $1 == "-h" || $1 == "--help" ]]; then
+  echo "Usage: omarchy-screensaver-set <effect|random>"
+  echo
+  echo "Available effects:"
+  omarchy-screensaver-list | sed 's/^/  /'
+  [[ -n ${1:-} ]] && exit 0
+  exit 1
+fi
+
+effect=$(tr '[:upper:]' '[:lower:]' <<<"$1")
+
+# Collect the list first. Piping it straight into `grep -q` lets grep exit on
+# the first match, and under `set -o pipefail` the SIGPIPE that kills the
+# producer (141) fails the whole pipeline even though the name was valid.
+available=$(omarchy-screensaver-list)
+
+if ! grep -qxF "$effect" <<<"$available"; then
+  echo "Unknown screensaver effect '$effect'" >&2
+  echo "Run 'omarchy-screensaver-list' to see the available effects." >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$STATE_FILE")"
+echo "$effect" >"$STATE_FILE"
+
+if command -v omarchy-notification-send >/dev/null 2>&1; then
+  omarchy-notification-send "Screensaver effect set to ${effect}" -t 2000 >/dev/null 2>&1 || true
+fi
+
+echo "Screensaver effect set to '$effect'"

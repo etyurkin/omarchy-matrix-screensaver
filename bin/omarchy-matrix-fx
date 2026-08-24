@@ -1,0 +1,412 @@
+#!/usr/bin/env python3
+"""Matrix rain that slowly condenses into the Omarchy logo, holds, then dissolves.
+
+Written for the Omarchy screensaver. Rain falls, glyphs catch in the shape of
+the wordmark, it holds, then they come loose and fall away -- four phases in one
+continuous loop, rendered here rather than delegated to a text-effect tool.
+
+The palette and rain glyph set follow ttfx's matrix defaults so this sits
+alongside the other effects rather than clashing with them.
+
+Timings are overridable from the environment:
+  OMARCHY_MATRIX_RAIN_LEAD      pure rain before any cell locks   (default 8)
+  OMARCHY_MATRIX_FORM_TIME      until the logo is complete        (default 60)
+  OMARCHY_MATRIX_HOLD_TIME      the finished logo holds           (default 20)
+  OMARCHY_MATRIX_DISSOLVE_TIME  the logo dissolves away           (default 10)
+  OMARCHY_MATRIX_FPS            target frame rate                 (default 30)
+  OMARCHY_MATRIX_SWAP           chance any glyph re-rolls a tick  (default 0.005)
+  OMARCHY_MATRIX_TRAP_FADE      secs a trapped glyph cools to green (default 1.2)
+"""
+
+import os
+import random
+import signal
+import sys
+import time
+
+DEFAULT_LOGO = os.path.expanduser("~/.config/omarchy/branding/screensaver.txt")
+
+RAIN_SYMBOLS = list(
+    '2598Z*):."=+-¦|_'
+    'ｦｱｳｴｵｶｷｹｺｻｼｽｾｿﾀﾂﾃﾅﾆﾇﾈﾊﾋﾎﾏﾐﾑﾒﾓﾔﾕﾗﾘﾜ'
+)
+
+# A trapped glyph is drawn from the same set as a falling one -- weighting it
+# toward a single glyph reads as a grid of identical squares, not as rain.
+
+HIGHLIGHT = (0xDB, 0xFF, 0xDB)   # ttfx --highlight-color
+RAIN_HEAD = (0x92, 0xBE, 0x92)   # ttfx --rain-color-gradient, bright end
+RAIN_TAIL = (0x18, 0x53, 0x18)   # ttfx --rain-color-gradient, dim end
+
+
+def env_float(name, default):
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+RAIN_LEAD = env_float("OMARCHY_MATRIX_RAIN_LEAD", 8.0)
+FORM_TIME = env_float("OMARCHY_MATRIX_FORM_TIME", 60.0)
+HOLD_TIME = env_float("OMARCHY_MATRIX_HOLD_TIME", 20.0)
+DISSOLVE_TIME = env_float("OMARCHY_MATRIX_DISSOLVE_TIME", 10.0)
+FPS = env_float("OMARCHY_MATRIX_FPS", 30.0)
+# ttfx --symbol-swap-chance. Trapped glyphs re-roll at the same rate as falling
+# ones: they are held in place, not frozen.
+SWAP = float(os.environ.get("OMARCHY_MATRIX_SWAP") or 0.005)
+# Seconds a newly trapped glyph takes to cool from head-white down to the
+# rain's green -- the arc a falling glyph makes as its column moves on past it.
+TRAP_FADE = env_float("OMARCHY_MATRIX_TRAP_FADE", 1.2)
+
+# A lead longer than the whole formation window would leave nothing to schedule
+# locks into, so clamp it rather than dividing by a negative span later.
+RAIN_LEAD = min(RAIN_LEAD, FORM_TIME * 0.5)
+
+def lerp(a, b, t):
+    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+    return (
+        int(a[0] + (b[0] - a[0]) * t),
+        int(a[1] + (b[1] - a[1]) * t),
+        int(a[2] + (b[2] - a[2]) * t),
+    )
+
+
+def load_logo(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            lines = handle.read().rstrip("\n").split("\n")
+    except OSError:
+        return []
+    return lines
+
+
+class Column:
+    """One falling rain column."""
+
+    __slots__ = ("head", "speed", "length", "delay", "glyphs")
+
+    def __init__(self, height, stagger=True):
+        self.reset(height, stagger)
+
+    def reset(self, height, stagger=True):
+        self.head = -random.uniform(0.0, height) if stagger else -1.0
+        self.speed = random.uniform(0.25, 1.1)
+        self.length = random.randint(max(4, height // 6), max(6, height // 2))
+        self.delay = random.uniform(0.0, 2.5) if not stagger else 0.0
+        self.glyphs = {}
+
+    def advance(self, dt, height):
+        if self.delay > 0.0:
+            self.delay -= dt
+            return
+        previous = int(self.head)
+        self.head += self.speed * dt * 30.0
+        # Give every row the head crossed a glyph, so a fast column does not
+        # leave gaps in its own trail.
+        for row in range(previous + 1, int(self.head) + 1):
+            if 0 <= row < height:
+                self.glyphs[row] = random.choice(RAIN_SYMBOLS)
+        if self.head - self.length > height:
+            self.reset(height, stagger=False)
+
+
+class Drop:
+    """A trapped glyph that came loose and now falls like ordinary rain.
+
+    The glyph itself becomes the head of the drop, and the rows it vacates on the
+    way down become its trail -- so the logo comes apart into streaks rather than
+    a scatter of bare characters. The trail never reaches above the row the glyph
+    was held in: there is nothing up there for it to have fallen through.
+    """
+
+    __slots__ = ("x", "start", "head", "speed", "length", "glyphs")
+
+    def __init__(self, x, y, glyph, height):
+        self.x = x
+        self.start = y
+        self.head = float(y)
+        self.speed = random.uniform(0.25, 1.1)
+        self.length = random.randint(max(4, height // 6), max(6, height // 2))
+        self.glyphs = {y: glyph}
+
+    def advance(self, dt, height):
+        previous = int(self.head)
+        self.head += self.speed * dt * 30.0
+        for row in range(previous + 1, int(self.head) + 1):
+            if 0 <= row < height:
+                self.glyphs[row] = random.choice(RAIN_SYMBOLS)
+
+    def alive(self, height):
+        """Dead once even the top of the trail has cleared the bottom edge."""
+        return self.head - self.length + 1 < height
+
+
+class Screensaver:
+    def __init__(self, logo_lines):
+        self.logo_lines = logo_lines
+        self.width = 0
+        self.height = 0
+        self.out = sys.stdout
+        self.build()
+
+    # -- layout ---------------------------------------------------------
+
+    def build(self):
+        size = os.get_terminal_size()
+        self.width = max(1, size.columns)
+        self.height = max(1, size.lines)
+        self.columns = [Column(self.height) for _ in range(self.width)]
+        self.falling = []
+        self.place_logo()
+        self.schedule()
+        self.phase_start = time.monotonic()
+        self.phase = "form"
+
+    def place_logo(self):
+        """Centre the logo and record every non-blank cell.
+
+        Only the cell positions matter. The characters in the file are a mask --
+        the logo is drawn with rain symbols caught out of the fall, never with
+        the block glyphs the file happens to be written in.
+        """
+        self.cells = set()
+        if not self.logo_lines:
+            return
+        logo_h = len(self.logo_lines)
+        logo_w = max(len(line) for line in self.logo_lines)
+        top = (self.height - logo_h) // 2
+        left = (self.width - logo_w) // 2
+        for row, line in enumerate(self.logo_lines):
+            for col, char in enumerate(line):
+                if char == " ":
+                    continue
+                x, y = left + col, top + row
+                if not (0 <= x < self.width and 0 <= y < self.height):
+                    continue
+                self.cells.add((x, y))
+
+    def schedule(self):
+        """Pick a random lock and release moment for each logo cell.
+
+        Uniform random over the window is what makes the logo assemble in no
+        discernible order -- no sweep, no wipe, just cells catching one by one.
+        """
+        span = max(0.1, FORM_TIME - RAIN_LEAD)
+        self.lock_at = {}
+        self.release_at = {}
+        self.stuck = {}
+        self.released = set()
+        for key in self.cells:
+            self.lock_at[key] = RAIN_LEAD + random.uniform(0.0, span)
+            self.release_at[key] = random.uniform(0.0, max(0.1, DISSOLVE_TIME))
+
+    # -- frame ----------------------------------------------------------
+
+    def release_cells(self, elapsed):
+        """Cut trapped glyphs loose as their moment arrives.
+
+        A released glyph is not deleted -- it keeps its symbol and falls from
+        wherever it was held, so the logo comes apart into rain rather than
+        blinking out of existence.
+        """
+        if self.phase != "dissolve":
+            return
+        for key in self.cells:
+            if key in self.released or elapsed < self.release_at[key]:
+                continue
+            self.released.add(key)
+            glyph = self.stuck.get(key)
+            if glyph:
+                x, y = key
+                self.falling.append(Drop(x, y, glyph, self.height))
+
+    def advance_falling(self, dt):
+        """Move cut-loose drops down, discarding them once they clear the canvas."""
+        if not self.falling:
+            return
+        for drop in self.falling:
+            drop.advance(dt, self.height)
+        self.falling = [d for d in self.falling if d.alive(self.height)]
+
+    def trapped_color(self, key, elapsed):
+        """White at the instant of capture, cooling to the rain's green."""
+        age = elapsed - self.lock_at[key] if self.phase == "form" else TRAP_FADE
+        if age >= TRAP_FADE:
+            return RAIN_HEAD
+        return lerp(HIGHLIGHT, RAIN_HEAD, age / TRAP_FADE)
+
+    def render(self, elapsed):
+        grid = [None] * (self.width * self.height)
+
+        for x, column in enumerate(self.columns):
+            if column.delay > 0.0:
+                continue
+            head = int(column.head)
+            for i in range(column.length):
+                y = head - i
+                if not (0 <= y < self.height):
+                    continue
+                glyph = column.glyphs.get(y)
+                if glyph is None:
+                    continue
+                if random.random() < SWAP:
+                    glyph = random.choice(RAIN_SYMBOLS)
+                    column.glyphs[y] = glyph
+                if i == 0:
+                    color = HIGHLIGHT
+                else:
+                    color = lerp(RAIN_HEAD, RAIN_TAIL, i / max(1, column.length - 1))
+                grid[y * self.width + x] = (glyph, color)
+
+        for drop in self.falling:
+            head = int(drop.head)
+            for i in range(drop.length):
+                row = head - i
+                if row < drop.start or not (0 <= row < self.height):
+                    continue
+                glyph = drop.glyphs.get(row)
+                if glyph is None:
+                    continue
+                if random.random() < SWAP:
+                    glyph = random.choice(RAIN_SYMBOLS)
+                    drop.glyphs[row] = glyph
+                if i == 0:
+                    color = HIGHLIGHT
+                else:
+                    color = lerp(RAIN_HEAD, RAIN_TAIL, i / max(1, drop.length - 1))
+                grid[row * self.width + drop.x] = (glyph, color)
+
+        for key in self.cells:
+            if not self.cell_state(key, elapsed):
+                continue
+            x, y = key
+            glyph = self.stuck.get(key)
+            if glyph is None or (SWAP and random.random() < SWAP):
+                glyph = random.choice(RAIN_SYMBOLS)
+                self.stuck[key] = glyph
+            grid[y * self.width + x] = (glyph, self.trapped_color(key, elapsed))
+
+        self.paint(grid)
+
+    def cell_state(self, key, elapsed):
+        """Whether one logo cell is currently held in place."""
+        if self.phase == "form":
+            return elapsed >= self.lock_at[key]
+        if self.phase == "hold":
+            return True
+        if self.phase == "dissolve":
+            return elapsed < self.release_at[key]
+        return False
+
+    def paint(self, grid):
+        parts = ["\033[H"]
+        last = None
+        index = 0
+        for y in range(self.height):
+            if y:
+                parts.append("\r\n")
+            blanks = 0
+            for _ in range(self.width):
+                cell = grid[index]
+                index += 1
+                if cell is None:
+                    blanks += 1
+                    continue
+                if blanks:
+                    parts.append(" " * blanks)
+                    blanks = 0
+                glyph, color = cell
+                if color != last:
+                    parts.append("\033[38;2;%d;%d;%dm" % color)
+                    last = color
+                parts.append(glyph)
+            # Clear to end of line instead of padding: fewer bytes, and it wipes
+            # whatever the previous frame left further right.
+            parts.append("\033[K")
+        self.out.write("".join(parts))
+        self.out.flush()
+
+    # -- loop -----------------------------------------------------------
+
+    def step(self, dt):
+        for column in self.columns:
+            column.advance(dt, self.height)
+
+        elapsed = time.monotonic() - self.phase_start
+        if self.phase == "form" and elapsed >= FORM_TIME:
+            self.phase, self.phase_start = "hold", time.monotonic()
+        elif self.phase == "hold" and elapsed >= HOLD_TIME:
+            self.phase, self.phase_start = "dissolve", time.monotonic()
+        elif self.phase == "dissolve" and elapsed >= DISSOLVE_TIME:
+            self.schedule()
+            self.phase, self.phase_start = "form", time.monotonic()
+        elapsed = time.monotonic() - self.phase_start
+        self.release_cells(elapsed)
+        self.advance_falling(dt)
+        self.render(elapsed)
+
+    def resized(self):
+        size = os.get_terminal_size()
+        return size.columns != self.width or size.lines != self.height
+
+
+def main():
+    path = DEFAULT_LOGO
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("-i", "--input"):
+        if len(argv) < 2:
+            sys.stderr.write("omarchy-matrix-fx: %s needs a file\n" % argv[0])
+            return 2
+        path = argv[1]
+
+    logo = load_logo(path)
+    if not logo:
+        sys.stderr.write("omarchy-matrix-fx: could not read logo from %s\n" % path)
+        return 1
+
+    try:
+        os.get_terminal_size()
+    except OSError:
+        sys.stderr.write("omarchy-matrix-fx: not attached to a terminal\n")
+        return 1
+
+    out = sys.stdout
+
+    def restore(*_):
+        out.write("\033[?25h\033[0m\033[2J\033[H")
+        out.flush()
+        sys.exit(0)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(sig, restore)
+
+    out.write("\033[?25l\033[2J")
+    frame = 1.0 / FPS
+    saver = Screensaver(logo)
+    previous = time.monotonic()
+    try:
+        while True:
+            now = time.monotonic()
+            dt, previous = now - previous, now
+            if saver.resized():
+                out.write("\033[2J")
+                saver.build()
+                dt = 0.0
+            saver.step(dt)
+            slack = frame - (time.monotonic() - now)
+            if slack > 0:
+                time.sleep(slack)
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    finally:
+        out.write("\033[?25h\033[0m\033[2J\033[H")
+        out.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
