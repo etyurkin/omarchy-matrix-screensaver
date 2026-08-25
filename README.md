@@ -54,6 +54,7 @@ a stock Omarchy install. The installer backs up anything it replaces.
 | `OMARCHY_MATRIX_TRAP_FADE` | 1.2 | Seconds a trapped glyph cools to green |
 | `OMARCHY_MATRIX_SWAP` | 0.005 | Chance any glyph re-rolls per tick |
 | `OMARCHY_MATRIX_FPS` | 30 | Frame rate |
+| `OMARCHY_MATRIX_COLORS` | green | Palette: `green`, `cyan`, `violet`, or a mix like `cyan-green` — each stream picks one at birth |
 
 Renders in under 2ms/frame at 1080p even at its busiest, so it stays in the
 low single digits of one core.
