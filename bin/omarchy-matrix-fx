@@ -15,6 +15,8 @@ Timings are overridable from the environment:
   OMARCHY_MATRIX_DISSOLVE_TIME  the logo dissolves away           (default 10)
   OMARCHY_MATRIX_FPS            target frame rate                 (default 30)
   OMARCHY_MATRIX_COLORS         palette name or "-" mix           (default green)
+                                unset, the choice saved by
+                                omarchy-screensaver-colors applies
   OMARCHY_MATRIX_SWAP           chance any glyph re-rolls a tick  (default 0.005)
   OMARCHY_MATRIX_TRAP_FADE      secs a trapped glyph cools to green (default 1.2)
 """
@@ -44,16 +46,43 @@ PALETTES = {
     "green": ((0xDB, 0xFF, 0xDB), (0x92, 0xBE, 0x92), (0x18, 0x53, 0x18)),
     "cyan": ((0x8F, 0xF4, 0xFF), (0x00, 0xB8, 0xD4), (0x0A, 0x2A, 0x3A)),
     "violet": ((0xF0, 0xC8, 0xFF), (0xC8, 0x6B, 0xFA), (0x2A, 0x10, 0x3E)),
+    # The cyberpunk Omarchy theme's green (#3df58c), brighter and colder than
+    # the matrix green above.
+    "neon": ((0x8D, 0xFF, 0xBE), (0x3D, 0xF5, 0x8C), (0x0F, 0x3D, 0x24)),
 }
+
+# Single names that expand to a mix, so a whole look can be picked in one word.
+MIXES = {
+    "cyberpunk": "cyan-violet-neon",
+}
+
+# Written by omarchy-screensaver-colors; the env var still wins when set.
+COLORS_STATE_FILE = os.path.expanduser(
+    "~/.local/state/omarchy/current/screensaver.colors"
+)
 
 
 def resolve_palettes(spec):
-    names = [n for n in spec.replace(",", "-").split("-") if n]
+    names = []
+    for n in spec.replace(",", "-").split("-"):
+        if n:
+            names.extend(MIXES.get(n, n).split("-"))
     chosen = [PALETTES[n] for n in names if n in PALETTES]
     return chosen or [PALETTES["green"]]
 
 
-ACTIVE_PALETTES = resolve_palettes(os.environ.get("OMARCHY_MATRIX_COLORS", "green"))
+def color_spec():
+    env = os.environ.get("OMARCHY_MATRIX_COLORS")
+    if env:
+        return env
+    try:
+        with open(COLORS_STATE_FILE) as f:
+            return f.read().strip() or "green"
+    except OSError:
+        return "green"
+
+
+ACTIVE_PALETTES = resolve_palettes(color_spec())
 
 
 def pick_palette():

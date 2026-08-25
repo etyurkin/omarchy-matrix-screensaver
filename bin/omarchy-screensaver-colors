@@ -1,0 +1,53 @@
+#!/bin/bash
+
+# Select the color palette the omarchy-matrix effect uses.
+#
+# Stores the choice next to the effect selection in Omarchy's state directory;
+# omarchy-matrix-fx reads it at launch (the OMARCHY_MATRIX_COLORS environment
+# variable still wins when set). Palettes and named mixes are defined in
+# omarchy-matrix-fx, so the valid names are read from there rather than
+# duplicated here.
+
+set -euo pipefail
+
+STATE_FILE="$HOME/.local/state/omarchy/current/screensaver.colors"
+
+list_names() {
+  python3 - <<'EOF'
+import re, shutil
+src = open(shutil.which("omarchy-matrix-fx")).read()
+for section in ("PALETTES", "MIXES"):
+    block = re.search(section + r"\s*=\s*\{(.*?)\n\}", src, re.S)
+    for name in re.findall(r'^\s*"([^"]+)":', block.group(1), re.M):
+        print(name)
+EOF
+}
+
+if [[ -z ${1:-} || $1 == "-h" || $1 == "--help" ]]; then
+  echo "Usage: omarchy-screensaver-colors <palette|mix>"
+  echo
+  echo "Available palettes and mixes (join palettes with '-' for your own mix):"
+  list_names | sed 's/^/  /'
+  [[ -n ${1:-} ]] && exit 0
+  exit 1
+fi
+
+spec=$(tr '[:upper:]' '[:lower:]' <<<"$1")
+available=$(list_names)
+
+for name in ${spec//-/ }; do
+  if ! grep -qxF "$name" <<<"$available"; then
+    echo "Unknown palette '$name'" >&2
+    echo "Run 'omarchy-screensaver-colors' with no argument to see the available names." >&2
+    exit 1
+  fi
+done
+
+mkdir -p "$(dirname "$STATE_FILE")"
+echo "$spec" >"$STATE_FILE"
+
+if command -v omarchy-notification-send >/dev/null 2>&1; then
+  omarchy-notification-send "Screensaver colors set to ${spec}" -t 2000 >/dev/null 2>&1 || true
+fi
+
+echo "Screensaver colors set to '$spec'"

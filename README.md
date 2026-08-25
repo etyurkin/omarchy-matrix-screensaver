@@ -54,7 +54,7 @@ a stock Omarchy install. The installer backs up anything it replaces.
 | `OMARCHY_MATRIX_TRAP_FADE` | 1.2 | Seconds a trapped glyph cools to green |
 | `OMARCHY_MATRIX_SWAP` | 0.005 | Chance any glyph re-rolls per tick |
 | `OMARCHY_MATRIX_FPS` | 30 | Frame rate |
-| `OMARCHY_MATRIX_COLORS` | green | Palette: `green`, `cyan`, `violet`, or a mix like `cyan-green` — each stream picks one at birth |
+| `OMARCHY_MATRIX_COLORS` | green | Palette: `green`, `cyan`, `violet`, `neon`, a named mix like `cyberpunk`, or your own like `cyan-green` — each stream picks one at birth |
 
 Renders in under 2ms/frame at 1080p even at its busiest, so it stays in the
 low single digits of one core.
@@ -68,6 +68,19 @@ omarchy-screensaver-list          # everything available
 omarchy-screensaver-set random    # rotate through effects at random
 omarchy-menu-screensaver          # pick from the Omarchy menu
 ```
+
+## Colors
+
+The palette persists the same way the effect choice does:
+
+```bash
+omarchy-screensaver-colors            # list palettes and named mixes
+omarchy-screensaver-colors cyberpunk  # cyan, violet, and neon rain side by side
+omarchy-screensaver-colors green      # back to classic matrix
+```
+
+`cyberpunk` matches the cyberpunk Omarchy theme's accent colors. The
+`OMARCHY_MATRIX_COLORS` environment variable still wins when set.
 
 ## What it touches
 
