@@ -28,6 +28,7 @@ stamp=$(date +%s)
 echo "Installing commands..."
 mkdir -p "$BIN_DIR"
 for f in "$REPO_DIR"/bin/*; do
+  [[ -f $f ]] || continue
   name=$(basename "$f")
   [[ -e $BIN_DIR/$name ]] && cp -a "$BIN_DIR/$name" "$BIN_DIR/$name.bak.$stamp"
   install -m 755 "$f" "$BIN_DIR/$name"
